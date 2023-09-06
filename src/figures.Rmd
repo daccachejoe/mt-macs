@@ -1,0 +1,1029 @@
+# This script is the reference script for figure 1
+```{r}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+```
+
+# Load the data
+```{r}
+# take the processed object list from the processing script
+load(file = "r-objects/object.list.rds")
+# bring in color data frame
+mac_levels <- read.csv("output/releveling_macrophages.csv")
+ct_color_vector <- mac_levels$color
+names(ct_color_vector) <- mac_levels$group_var
+
+# for the full object umaps
+umap.color.vector <- c(
+  "#6666CC",
+  "#339900",
+  "#33CCCC",
+  "#990000",
+  "#996600",
+  "#9966FF",
+  "#CC33CC",
+  "#FF9999"
+)
+names(umap.color.vector) <-
+  c(
+    "Lymphoid",
+    "Epithelial",
+    "Mesenchyme",
+    "MPs",
+    "Endothelial",
+    "Cycling",
+    "Plasma",
+    "cDC"
+  )
+```
+
+# Figure 1B & C: umap plots with myeloid lineage cells colored in red and then the myeloid lineage umap plots
+```{r, Figure 1B & C}
+  full.umaps <-
+    lapply(object.list, function(obj.list) {
+      obj.list[["full"]]$cell.group <- ifelse(obj.list[["full"]]$indepth_cellType %in% names(ct_color_vector),
+        "MPs",
+        ifelse(obj.list[["full"]]$indepth_cellType %in% c("cDC 1", "cDC 2"),
+          "cDC",
+          obj.list[["full"]]$indepth_cellType
+        )
+      )
+      p <- DimPlot(obj.list[["full"]],
+        label = F,
+        raster = FALSE,
+        group.by = "cell.group",
+        reduction = "umap",
+        pt.size = 0.1
+      ) +
+        scale_color_manual(values = umap.color.vector) +
+        ggtitle(
+          toupper(obj.list[["full"]]$organ[1]),
+          ncol(obj.list[["full"]])
+        ) +
+        BoldTitle() +
+        theme(
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          axis.line = element_blank(),
+          axis.title = element_blank(),
+          plot.subtitle = element_text(hjust = 0.5)
+        )
+      return(p)
+    })
+  myeloid.umaps <-
+    lapply(object.list, function(obj.list) {
+      p <- DimPlot(obj.list[["myeloid"]],
+        label = F,
+        raster = FALSE,
+        group.by = "group_var",
+        pt.size = 0.1
+      ) +
+        scale_color_manual(values = ct_color_vector) +
+        ggtitle(
+          toupper(obj.list[["myeloid"]]$organ[1]),
+          ncol(obj.list[["myeloid"]])
+        ) +
+        BoldTitle() +
+        theme(
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          axis.line = element_blank(),
+          axis.title = element_blank(),
+          plot.subtitle = element_text(hjust = 0.5)
+        )
+      return(p)
+    })
+
+  # Merging legends
+  legend_1 <- ggpubr::get_legend(full.umaps[[3]])
+  legend_2 <- ggpubr::get_legend(myeloid.umaps[[3]])
+
+  # Combining plots
+  rm_legend <- function(p) {
+    p + theme(legend.position = "none")
+  }
+  plots_1 <- ggpubr::ggarrange(plotlist = lapply(full.umaps, rm_legend), nrow = 1)
+  plots_2 <- ggpubr::ggarrange(plotlist = lapply(myeloid.umaps, rm_legend), nrow = 1)
+
+  # plots + merged legends
+  ggpubr::ggarrange(plots_1, legend_1, widths = c(0.84, 0.16))
+  ggpubr::ggarrange(plots_2, legend_2, widths = c(0.84, 0.16))
+
+```
+
+# Figure 1D: heatmap the top 10 DGE per cluster and label the conserved genes
+```{r, Figure 1D: top10DGE heatmap}
+  # calculating myeloid markers
+  mye.markers <-
+    lapply(object.list, function(obj.list) {
+      mye <- obj.list[["myeloid"]] # select the myeloid specific object
+      mye <- NormalizeData(mye) # log normalize
+      Idents(mye) <- "group_var"
+      # find positive markers, downsample for processing time
+      M <- FindAllMarkers(mye, 
+        only.pos = TRUE,
+        max.cells.per.ident = 5000
+      )
+      return(M)
+    })
+  names(mye.markers) <- names(object.list)
+  mye.markers.bound <- bind_rows(mye.markers, .id = "organ")
+
+  # retaining top genes per cluster
+  all.genes <- unlist(
+    lapply(
+      mye.markers,
+      function(M) {
+        genes.to.plot <-
+          M %>%
+          group_by(gene) %>%
+          mutate(rank = rank(-avg_log2FC)) %>%
+          filter(rank == 1) %>%
+          group_by(cluster) %>%
+          top_n(n = 10, wt = avg_log2FC) %>%
+          pull(gene)
+        return(genes.to.plot)
+      }
+    )
+  )
+
+  # Identify the duplicated genes to label in the plot
+  genes.to.label <- all.genes[duplicated(all.genes)]
+
+  annot_col_df <-
+    data.frame(
+      group_var =
+        mac_levels %>%
+          select(group_var) %>%
+          distinct() %>%
+          pull(group_var),
+      row.names =
+        mac_levels %>%
+          select(group_var) %>%
+          distinct() %>%
+          pull(group_var)
+    )
+
+  annot_color_list <-
+    list("group_var" = mac_levels$color[match(annot_col_df$group_var, mac_levels$group_var)])
+  names(annot_color_list$group_var) <- rownames(annot_col_df)
+
+  heatmap.list <-
+    lapply(
+      names(object.list),
+      function(organ) {
+        M <- mye.markers[[organ]]
+        genes.to.plot <-
+          M %>%
+          group_by(gene) %>%
+          mutate(rank = rank(-avg_log2FC)) %>%
+          filter(rank == 1) %>%
+          group_by(cluster) %>%
+          top_n(n = 10, wt = avg_log2FC) %>%
+          pull(gene)
+        ave.exp.df <-
+          AverageExpression(object.list[[organ]][["myeloid"]],
+            assay = "RNA",
+            slot = "data",
+            group.by = "group_var",
+            features = genes.to.plot
+          ) # calculate average expression of genes included
+        labs.row <- rownames(ave.exp.df$RNA)
+        labs.row[!(labs.row %in% genes.to.label)] <- ""
+        p <-
+          pheatmap::pheatmap(as.matrix(ave.exp.df$RNA),
+            labels_row = labs.row,
+            cluster_cols = F,
+            cluster_rows = F,
+            angle_col = 90,
+            annotation_col = annot_col_df,
+            annotation_colors = annot_color_list,
+            show_colnames = FALSE,
+            scale = "row",
+            # main = paste0(toupper(organ)),
+            color = colorRampPalette(c("#0000CC", "#FFFFFF", "#CC0000"))(100),
+            border_color = NA,
+            fontsize_row = 4,
+            annotation_names_col = FALSE,
+            annotation_legend = ifelse(organ %in% c("liver", "kidney"), FALSE, TRUE),
+            # annotation_legend = FALSE,
+            legend = ifelse(organ %in% c("liver", "kidney"), FALSE, TRUE),
+            silent = T,
+            drop_levels = FALSE,
+          )
+        return(p[[4]])
+      }
+    )
+
+  ggpubr::ggarrange(
+    plotlist = heatmap.list,
+    common.legend = FALSE,
+    ncol = 3,
+    widths = c(0.28, 0.28, 0.44)
+  )
+```
+
+# Figure 2A: Adding M1 and M2 module scores and plotting 
+```{r, Figure 2A}
+  # using the genes from Viola et al
+  module.gene.list <- list(
+    "M1" = c(
+      "TNF", "IL1B", "IL6", "IL12B", "IL23A", "CD80", "CD86", "CIITA", "HLA-DRB1",
+      "NOS2", "PFKFB3", "PKM", "CAD", "STAT1", "HIF1A", "JUN", "FOS"
+    ),
+    "M2" = c(
+      "IL10", "TGFB1", "MRC1", "CD36", "IL1RN", "CD163", "ARG1", "SHPK", "STAT6",
+      "GATA3", "SOCS1", "PPARG", "TLR1", "TLR8", "APC", "GLUL"
+    )
+  )
+  # score the cells based on their expression of each module
+  object.list <-
+    lapply(
+      object.list,
+      function(obj.list) {
+        obj <- obj.list[["myeloid"]]
+        DefaultAssay(obj) <- "RNA"
+        obj <- NormalizeData(obj)
+        obj <- AddModuleScore(obj, features = module.gene.list)
+        colnames(obj@meta.data)[c(grep("Cluster1", colnames(obj@meta.data)):ncol(obj@meta.data))] <- names(module.gene.list)
+        obj.list[["myeloid"]] <- obj
+        return(obj.list)
+      }
+    )
+
+  # plot the results
+  p <-
+    lapply(object.list, function(obj.list) {
+      md <- obj.list[["myeloid"]]@meta.data
+      md <- md %>% select(group_var, names(module.gene.list))
+      return(md)
+    }) %>%
+    bind_rows(.id = "organ") %>%
+    mutate(
+      group_var = toupper(group_var),
+      organ = factor(toupper(organ), levels = c("LIVER", "KIDNEY", "LUNG"))
+    ) %>%
+    reshape2::melt(variable.name = "module.score") %>%
+    mutate(module.score = toupper(module.score)) %>%
+    ggplot(aes(y = value, x = group_var, fill = group_var)) +
+    geom_boxplot(outlier.size = 0.25) +
+    theme_classic() +
+    geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+    facet_grid(organ ~ module.score) +
+    scale_fill_manual(values = ct_color_vector, limits = force) +
+    ggtitle("Macrophage Polarization Score") +
+    ylab("Module Score") +
+    theme(
+      axis.text = element_text(color = "black"),
+      strip.text.x = element_text(face = "bold"),
+      strip.text.y = element_text(face = "bold"),
+      legend.position = "top",
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+      axis.title.x = element_blank(),
+      axis.text.x = element_blank(),
+      axis.ticks = element_blank()
+    )
+  p
+```
+
+# Figure 2B: Venn diagram of DGE in MT MACS in each organ
+```{r, Figure 2B}
+# filter the DGE lists
+  mt.mac.genes <-
+    lapply(
+      mye.markers,
+      function(M) {
+        genes <- M %>%
+          filter(
+            cluster == "MAC_MT",
+            p_val_adj < 0.05,
+            avg_log2FC > 0
+          ) %>%
+          pull(gene)
+        return(genes)
+      }
+    )
+  names(mt.mac.genes) <- toupper(names(mt.mac.genes))
+  
+  ggvenn::ggvenn(mt.mac.genes,
+    fill_color = c(
+      "#339900",
+      "#CC3333",
+      "#6699FF"
+    )
+  )
+
+  # to identify the genes in each slice
+  duplicated.genes <- unlist(mt.mac.genes, use.names = FALSE)[duplicated(unlist(mt.mac.genes))]
+  organ.summary <- sapply(
+    duplicated.genes,
+    function(gene) {
+      in.lung <- gene %in% mt.mac.genes[["LUNG"]]
+      in.liver <- gene %in% mt.mac.genes[["LIVER"]]
+      in.kidney <- gene %in% mt.mac.genes[["KIDNEY"]]
+
+      res <- names(mt.mac.genes)[c(in.lung, in.kidney, in.liver)]
+      return(res)
+    }
+  )
+  gene.df <-
+    data.frame(
+      gene = names(organ.summary),
+      organs = unlist(lapply(organ.summary, function(vec) {
+        paste(vec, collapse = ",")
+      })),
+      nHits = unlist(lapply(organ.summary, length))
+    ) %>%
+    arrange(desc(nHits), organs) %>%
+    distinct()
+```
+
+# Figure 2C: Violin plot of common DGEs and MT genes
+```{r, Figure 2C}
+  all.genes <- unique(unlist(lapply(object.list, function(obj.list) {
+    return(rownames(obj.list[[2]]))
+  })))
+  mt.genes <- all.genes[grep("^MT1", all.genes)]
+  mt.genes <- c(mt.genes, all.genes[grep("^MT2", all.genes)])
+  mt.genes <- c(mt.genes, c("MTF1", "MTF2"))
+  mt.genes <- mt.genes[-which(mt.genes == "MT1HL1")]
+  mt.genes <- c(mt.genes, "CTSL", "SGK1")
+
+  # generating box plots of mt-gene expression in each organ
+  mt.plot.list <- lapply(
+    object.list,
+    function(obj.list) {
+      mye <- obj.list[["myeloid"]]
+
+      # filter to include genes present in the object
+      genes.to.violin <- mt.genes[mt.genes %in% rownames(mye)]
+      genes.to.add.in <- mt.genes[!(mt.genes %in% rownames(mye))]
+      mini_matrix <- matrix(data = 0, nrow = length(genes.to.add.in), ncol = ncol(mye))
+      # make zero count matrix for genes not included for visualization purposes (i.e. create blank violin plot)
+      rownames(mini_matrix) <- genes.to.add.in
+
+      new.counts <- rbind2(mye[["RNA"]]@data, mini_matrix)
+      mye[["plot"]] <- CreateAssayObject(data = new.counts)
+
+      p <-
+        VlnPlot(mye,
+          features = mt.genes,
+          stack = TRUE,
+          fill.by = "ident",
+          assay = "plot",
+          group.by = "group_var",
+          same.y.lims = TRUE
+        ) +
+        scale_fill_manual(values = ct_color_vector) +
+        theme(
+          axis.text.y = element_text(size = 8),
+          axis.text.x = element_text(size = 6, vjust = 4),
+          axis.title = element_blank(),
+          axis.ticks = element_blank(),
+          plot.title = element_text(
+            hjust = 1,
+            vjust = -2.25,
+            size = 10
+          ),
+          plot.margin = unit(c(-5, 5, -2, 2), "pt")
+        ) +
+        ggtitle(toupper(mye$organ[1])) +
+        NoLegend()
+      if (mye$organ[1] == "liver") {
+        p4 <- p4 + theme(strip.text.x = element_text(angle = 0, size = 8))
+      } else {
+        p4 <- p4 + theme(strip.text.x = element_blank())
+      }
+      return(list(p))
+    }
+  )
+  ggpubr::ggarrange(
+    plotlist = lapply(mt.plot.list, function(p.list) {
+      return(p.list[[1]])
+    }),
+    ncol = 1, nrow = 3,
+    common.legend = TRUE,
+    align = "v"
+  )
+```
+
+# Figure 3B&C: Generation of gene signatures and adding them as module scores
+```{r, Figure 3B&C}
+  macs.to.test <- unique(names(ct_color_vector))
+for(mac.type in macs.to.test){
+  gene.sig.list <- list()
+  for(organ in c("liver",
+                 "kidney",
+                 "lung")) {
+    mye <- object.list[[organ]][["myeloid"]]
+    DefaultAssay(mye) <- "RNA"
+    mye <- NormalizeData(mye)
+    
+    # Finding markers against all cell types
+    Idents(mye) <- "group_var"
+    # M <- FindAllMarkers(mye,
+    #                     max.cells.per.ident = 5000,
+    #                     only.pos = TRUE)
+    # write.csv(
+    #   M,
+    #   file = paste0("output/", organ, "_myeloid_markers_no_DC.csv"),
+    #   row.names = FALSE
+    # )
+    
+    marker.file.path <- paste0("output/", organ, "_myeloid_markers_no_DC.csv")
+    M <- read.csv(marker.file.path)
+    
+    ct.to.test <- mac.type
+    ct.signature <-
+      M %>%
+      group_by(gene) %>%
+      mutate(gene.rank = rank(-avg_log2FC)) %>%
+      filter(gene.rank == 1 &
+               cluster == ct.to.test &
+               avg_log2FC > 0.75 &
+               p_val_adj < 0.05)
+    ref.df <-
+      M %>%
+      filter(gene %in% ct.signature$gene,
+             p_val_adj < 0.05) %>%
+      group_by(gene) %>%
+      mutate(gene.rank = rank(-avg_log2FC)) %>%
+      filter(gene.rank == 2)
+    
+    test.df <-
+      left_join(ct.signature[, "gene"], ref.df[, c("gene", "cluster")])
+    if (sum(is.na(test.df$cluster)) > 0) {
+      res.genes <- test.df$gene[which(is.na(test.df$cluster))]
+      test.df <- test.df[-which(is.na(test.df$cluster)), ]
+    }
+    groups.and.genes <-
+      test.df %>% group_by(cluster) %>% group_split()
+    gene.tests <-
+      lapply(groups.and.genes,
+             function(test.group.df) {
+               test.group <- as.character(test.group.df$cluster[1])
+               test.genes <- test.group.df$gene
+               mini.M <-
+                 FindMarkers(
+                   mye,
+                   features = test.genes,
+                   ident.1 = ct.to.test,
+                   logfc.threshold = 0,
+                   ident.2 = test.group,
+                   group.by = "group_var"
+                 )
+               sig.genes <-
+                 mini.M %>% filter(p_val_adj < 0.1, avg_log2FC > 0)
+               sig.genes <- rownames(sig.genes)
+               return(sig.genes)
+             })
+    
+    gene.signature <- unlist(gene.tests)
+    if (exists("res.genes")) {
+      gene.signature <- c(res.genes, gene.signature)
+      rm(res.genes)
+    }
+    message("Found ", length(gene.signature), " genes in signature for ", ct.to.test, " in ", organ)
+    gene.sig.list[[organ]] <- gene.signature
+  }
+  
+  # adding the module score to the objects
+  object.list <- 
+    lapply(object.list, 
+           function(obj.list){
+             mye <- obj.list[["myeloid"]]
+             mye <- AddModuleScore(mye,
+                                   features = list("Cluster1" = gene.sig.list[[organ]]),
+                                   assay = "RNA"
+             )
+             colnames(mye@meta.data)[which(colnames(mye@meta.data) == "Cluster1")] <- paste(mac.type)
+             obj.list[["myeloid"]] <- mye
+             return(obj.list)
+           })
+  
+  plot.min.max <- range(
+    unlist(
+      lapply(
+        object.list, function(obj.list){
+          return(obj.list[["myeloid"]][[paste(mac.type)]])
+        }
+      )
+    )
+  )
+  
+  # creating our signature box plots
+  sig.plot.list <- 
+    lapply(names(gene.sig.list), 
+           function(organ){
+             if(length(gene.sig.list[[organ]]) == 0){
+               return(NULL)
+             }
+             mye <- object.list[[organ]][["myeloid"]] 
+             p <- 
+               mye@meta.data %>%
+               dplyr::select(group_var, paste(mac.type)) %>%
+               mutate(group_var = toupper(group_var)) %>%
+               reshape2::melt(variable.name = "module.score") %>%
+               mutate(module.score = toupper(module.score)) %>%
+               ggplot(aes(y = value, x = group_var, fill = group_var)) +
+               geom_boxplot(outlier.size = 0.01) +
+               theme_classic() +
+               ggtitle(toupper(mye$organ[1]), 
+                       paste(
+                         paste(gene.sig.list[[organ]][1:11], collapse = " "),
+                         paste(gene.sig.list[[organ]][12:length(gene.sig.list[[organ]])], collapse = " "),
+                         sep = "\n"
+                       )) +
+               # geom_vline(xintercept = 1, color = "red", linetype = "dashed") +
+               # geom_vline(xintercept = 0, color = "black") +
+               facet_grid(~module.score, scales = "free") +
+               ylab("Cell Type") +
+               xlab("MT Mac Signature Score") +
+               scale_fill_manual(values = ct_color_vector) +
+               ylim(plot.min.max) +
+               theme(axis.text.x = element_text(size = 6, 
+                                                angle = 30, 
+                                                vjust = 1,
+                                                hjust = 1,
+                                                color = "black"),
+                     axis.text.y = element_text(size = 6, 
+                                                # margin = 0,
+                                                # vjust = 1,
+                                                hjust = 5,
+                                                color = "black"),
+                     axis.title = element_blank(),
+                     axis.ticks = element_blank(),
+                     strip.text.x = element_blank(),
+                     plot.title = element_text(hjust = 0.5,
+                                               vjust = -1.5,
+                                               size = 8,
+                                               face = "bold"),
+                     plot.subtitle = element_text(hjust = 0, 
+                                                  size = 6),
+                     plot.margin=unit(c(1,1,1,1),"pt")
+               ) 
+             if(organ != "liver"){
+               p <- p + theme(axis.text.y = element_blank(),
+                              plot.margin=unit(c(1,-1,1,1),"pt"))
+             }
+             return(p)
+           })
+  
+  
+  legend <- ggpubr::get_legend(sig.plot.list[[length(sig.plot.list)]])
+  rm_legend <- function(p){p + theme(legend.position = "none")}
+  plots <- ggpubr::ggarrange(plotlist = lapply(sig.plot.list, rm_legend),
+                             nrow = 1, 
+                             ncol = 3)
+  
+  print(plots)
+  print(ggpubr::ggarrange(plots, legend, widths = c(0.84, 0.16)))
+  
+
+  max.length <- max(unlist(lapply(gene.sig.list, length)))
+  myeloid.signature.data.frame <- bind_cols(lapply(gene.sig.list, function(vec){
+    if(length(vec) < max.length){
+      vec <- c(vec, rep("", max.length-length(vec)))
+    }
+    return(vec)
+  }))
+  write.csv(myeloid.signature.data.frame, file = paste0("output/myeloid_signature_gene_sets-",mac.type,".csv"), row.names = FALSE)
+}
+```
+
+# Figure 3D: Generation of gene signatures in the full object
+```{r, Figure 3D}
+  # creating signatures for MT Macs only against all other cell types (again)
+  full.gene.sig.list <- list()
+  for (organ in c(
+    "liver",
+    "kidney",
+    "lung"
+  )) {
+    obj <- object.list[[organ]][["full"]]
+    DefaultAssay(obj) <- "RNA"
+    obj <- NormalizeData(obj)
+
+    # Finding markers against all cell types
+    Idents(obj) <- "indepth_cellType"
+    M <- FindAllMarkers(obj,
+      max.cells.per.ident = 5000,
+      only.pos = TRUE
+    )
+
+    ct.to.test <- "MAC_MT"
+    ct.signature <-
+      M %>%
+      group_by(gene) %>%
+      mutate(gene.rank = rank(-avg_log2FC)) %>%
+      filter(gene.rank == 1 &
+        cluster == ct.to.test &
+        avg_log2FC > 0.75 &
+        p_val_adj < 0.05)
+    ref.df <-
+      M %>%
+      filter(
+        gene %in% ct.signature$gene,
+        p_val_adj < 0.05
+      ) %>%
+      group_by(gene) %>%
+      mutate(gene.rank = rank(-avg_log2FC)) %>%
+      filter(gene.rank == 2)
+
+    test.df <-
+      left_join(ct.signature[, "gene"], ref.df[, c("gene", "cluster")])
+    if (sum(is.na(test.df$cluster)) > 0) {
+      res.genes <- test.df$gene[which(is.na(test.df$cluster))]
+      test.df <- test.df[-which(is.na(test.df$cluster)), ]
+    }
+    groups.and.genes <-
+      test.df %>%
+      group_by(cluster) %>%
+      group_split()
+    gene.tests <-
+      lapply(
+        groups.and.genes,
+        function(test.group.df) {
+          test.group <- as.character(test.group.df$cluster[1])
+          test.genes <- test.group.df$gene
+          mini.M <-
+            FindMarkers(
+              obj,
+              features = test.genes,
+              ident.1 = ct.to.test,
+              logfc.threshold = 0,
+              ident.2 = test.group,
+              group.by = "indepth_cellType"
+            )
+          sig.genes <-
+            mini.M %>% filter(p_val_adj < 0.1, avg_log2FC > 0)
+          sig.genes <- rownames(sig.genes)
+          return(sig.genes)
+        }
+      )
+
+    gene.signature <- unlist(gene.tests)
+    if (exists("res.genes")) {
+      gene.signature <- c(res.genes, gene.signature)
+      rm(res.genes)
+    }
+    message("Found ", length(gene.signature), " genes in signature for ", ct.to.test, " in ", organ)
+    full.gene.sig.list[[organ]] <- gene.signature
+  }
+
+  object.list <-
+    lapply(
+      object.list,
+      function(obj.list) {
+        obj <- obj.list[["full"]]
+        obj <- NormalizeData(obj)
+        obj <- AddModuleScore(obj,
+          features = list(
+            "MAC_MT" =
+              full.gene.sig.list[[obj.list[["full"]]$organ[1]]]
+          ),
+          assay = "RNA"
+        )
+        colnames(obj@meta.data)[which(colnames(obj@meta.data) == "Cluster1")] <- "MAC_MT"
+        obj.list[["full"]] <- obj
+        return(obj.list)
+      }
+    )
+
+  plot.min.max <- range(
+    unlist(
+      lapply(
+        object.list, function(obj.list) {
+          return(obj.list[["full"]]$MAC_MT)
+        }
+      )
+    )
+  )
+  combined.color.vector <- c(
+    "#0000CC",
+    "#CCCC00",
+    "#33CC99",
+    "#6666CC",
+    "#FF9999",
+    "#CC33CC",
+    "#3399FF",
+    "#660000",
+    "#33CCCC",
+    "#333300",
+    "#FF9999",
+    "#339900",
+    "#FF9933",
+    "#9966FF",
+    "#996600",
+    "#999999"
+  )
+  names(combined.color.vector) <- toupper(
+    c(
+      "MAC_RES",
+      "INF_MONO/MAC",
+      "MONOCYTE",
+      "Lymphoid",
+      "cDC 2",
+      "Plasma",
+      "MAC_RNASE1+",
+      "MAC_SPP1+",
+      "Mesenchyme",
+      "CYCLING",
+      "cDC 1",
+      "Epithelial",
+      "MAC_MT",
+      "Cycling",
+      "Endothelial",
+      "MAC_misc"
+    )
+  )
+  full.sig.plot.list <-
+    lapply(
+      names(full.gene.sig.list),
+      function(organ) {
+        obj <- object.list[[organ]][["full"]]
+        p <-
+          obj@meta.data %>%
+          select(indepth_cellType, MAC_MT) %>%
+          mutate(indepth_cellType = toupper(indepth_cellType)) %>%
+          reshape2::melt(variable.name = "module.score") %>%
+          mutate(module.score = toupper(module.score)) %>%
+          ggplot(aes(y = value, x = indepth_cellType, fill = indepth_cellType)) +
+          geom_boxplot(outlier.size = 0.01) +
+          theme_classic() +
+          ggtitle(
+            toupper(obj$organ[1]),
+            paste(
+              paste(full.gene.sig.list[[organ]][1:11], collapse = " "),
+              paste(full.gene.sig.list[[organ]][12:length(full.gene.sig.list[[organ]])],
+                collapse = " "
+              ),
+              sep = "\n"
+            )
+          ) +
+          facet_grid(~module.score, scales = "free") +
+          ylab("Cell Type") +
+          xlab("MT Mac Signature Score") +
+          scale_fill_manual(values = combined.color.vector) +
+          ylim(plot.min.max) +
+          theme(
+            axis.text.x = element_text(
+              size = 6,
+              angle = 30,
+              vjust = 1,
+              hjust = 1,
+              color = "black"
+            ),
+            axis.text.y = element_text(
+              size = 6,
+              # margin = 0,
+              # vjust = 1,
+              hjust = 5,
+              color = "black"
+            ),
+            axis.title = element_blank(),
+            axis.ticks = element_blank(),
+            strip.text.x = element_blank(),
+            plot.title = element_text(
+              hjust = 0.5,
+              vjust = -1.5,
+              size = 8,
+              face = "bold"
+            ),
+            plot.subtitle = element_text(
+              hjust = 0,
+              size = 6
+            ),
+            plot.margin = unit(c(1, 1, 1, 1), "pt")
+          )
+
+        if (organ != "liver") {
+          p <- p + theme(
+            axis.text.y = element_blank(),
+            plot.margin = unit(c(1, -1, 1, 1), "pt")
+          )
+        }
+        return(p)
+      }
+    )
+
+  legend <- ggpubr::get_legend(full.sig.plot.list[[3]])
+  rm_legend <- function(p) {
+    p + theme(legend.position = "none")
+  }
+  plots <- ggpubr::ggarrange(
+    plotlist = lapply(full.sig.plot.list, rm_legend),
+    nrow = 1, ncol = 3
+  )
+
+  plots
+  ggpubr::ggarrange(plots, legend, widths = c(0.84, 0.16))
+```
+
+# Figure 4: Interrogation of Mulder et al data
+```{r, Figure 4}
+  object <- readRDS("r-objects/mulder-et-al/2021_MoMac_VERSE.RDS")
+
+  # Figure 4A: annotated UMAP plots
+  DimPlot(object, raster = F, group.by = "Clusters") +
+    theme(
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      axis.line = element_blank(),
+      axis.title = element_blank(),
+      plot.subtitle = element_text(hjust = 0.5)
+    )
+  object$plot.var <- ifelse(object$Clusters == "Macrophage -11", "MT-Mac", "Other")
+  
+  # Figure 4B: top 20 DGE of the Mac-11 cluster
+  M <- FindMarkers(object, ident.1 = "Macrophage -11", group.by = "Clusters", only.pos = T, max.cells.per.ident = 5000)
+  M$gene <- rownames(M)
+  M %>%
+    filter(p_val_adj < 0.01) %>%
+    top_n(n = 20, wt = avg_log2FC) %>%
+    arrange(avg_log2FC) %>%
+    mutate(
+      gene = factor(gene, levels = gene),
+      color = ifelse(gene %in%
+        c("MT2A", "MT1E", "MT1M", "MT1F", "MT1G", "MT1H", "MT1X", "MT1A", "HAMP"),
+      "MT",
+      "other"
+      )
+    ) %>%
+    ggplot(aes(x = avg_log2FC, y = gene, fill = color)) +
+    geom_bar(stat = "identity") +
+    ggtitle("Top 20 DEG of Macrophage -11 Cluster") +
+    theme_classic() +
+    NoLegend() +
+    geom_vline(xintercept = 1, lty = 2) +
+    theme(
+      axis.text = element_text(color = "black"),
+      plot.title = element_text(hjust = 0.5, size = 12, face = "bold")
+    ) +
+    scale_fill_manual(values = c("#CC0000", "gray"))
+
+  # Figure 4C: % MT in each tissue
+  object@meta.data %>%
+    group_by(Tissue, Clusters, .drop = FALSE) %>%
+    summarise(counts = n()) %>%
+    mutate(perc = 100 * counts / sum(counts)) %>%
+    filter(Clusters == "Macrophage -11") %>%
+    ungroup() %>%
+    arrange(perc) %>%
+    mutate(Tissue = factor(Tissue, levels = Tissue)) %>%
+    ggplot(aes(x = perc, fill = Tissue, y = Tissue)) +
+    geom_bar(stat = "identity") +
+    scale_x_continuous(labels = scales::percent_format(scale = 1)) +
+    theme_classic() +
+    NoLegend() +
+    xlab("% of MonoMac-Verse") +
+    theme(axis.text = element_text(color = "black"))
+
+  DefaultAssay(object) <- "RNA"
+  # object <- NormalizeData(object)
+  # Add Module score of our genes
+  sig.gene.df <- read.csv(file = "output/myeloid_signature_gene_sets.csv")
+  conserved.genes <- list(names(table(unlist(sig.gene.list))[table(unlist(sig.gene.list)) == 3]))
+  object <- AddModuleScore(object, features = conserved.genes, assay = "RNA")
+
+  # Figure 4D: Module score feature plot
+  FeaturePlot(object, features = "Cluster1", order = T, raster = F, reduction = "umap", cols = c("yellow", "red")) +
+    theme(
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      axis.line = element_blank(),
+      axis.title = element_blank(),
+      plot.subtitle = element_text(hjust = 0.5)
+    )
+
+    # Figure 4E: box plot of module score distribution
+  object@meta.data %>%
+    select(Clusters, Cluster1) %>%
+    reshape2::melt(variable.name = "module.score") %>%
+    mutate(module.score = toupper(module.score)) %>%
+    ggplot(aes(y = value, x = Clusters, fill = Clusters)) +
+    geom_boxplot(outlier.size = 0.01) +
+    theme_classic() +
+    ggtitle("MT Gene Signature Score") +
+    ylab("Cell Type") +
+    xlab("MT Mac Signature Score") +
+    theme(
+      axis.text.x = element_text(
+        size = 10,
+        angle = 90,
+        vjust = 1,
+        hjust = 1,
+        color = "black"
+      ),
+      axis.text.y = element_text(
+        size = 10,
+        # margin = 0,
+        # vjust = 1,
+        hjust = 5,
+        color = "black"
+      ),
+      axis.title = element_blank(),
+      axis.ticks = element_blank(),
+      strip.text.x = element_blank(),
+      plot.title = element_text(
+        hjust = 0.5,
+        vjust = -1.5,
+        size = 12,
+        face = "bold"
+      ),
+      plot.subtitle = element_text(
+        hjust = 0,
+        size = 6
+      )
+    ) +
+    NoLegend()
+
+  # Figure 4F: Violin plot of each gene in the gene signature 
+  VlnPlot(object, features = c(conserved.genes[[1]], "Cluster1"), stack = T, group.by = "Clusters", fill.by = "ident") +
+    NoLegend() +
+    theme(
+      axis.text.y = element_text(size = 8),
+      axis.text.x = element_text(size = 6, vjust = 4),
+      axis.title = element_blank(),
+      axis.ticks = element_blank(),
+      plot.title = element_text(
+        hjust = 1,
+        vjust = -2.25,
+        size = 10
+      ),
+      strip.text.x = element_text(angle = 0, size = 8)
+    )
+```
+
+# Figure 5: Ligand-receptor analysis and visualization
+```{r, Figure 5}
+  library(CellChat)
+  cc.list <- list()
+  df.net.list <- list()
+
+  obj <- object.list[["liver"]][["full"]]
+  DefaultAssay(obj) <- "RNA"
+  obj <- NormalizeData(obj)
+
+  cellchat <- createCellChat(object = obj, group.by = "indepth_cellType")
+  CellChatDB <- CellChatDB.human
+  CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling")
+  cellchat@DB <- CellChatDB.use
+  cellchat <- subsetData(cellchat)
+
+  cellchat <- identifyOverExpressedGenes(cellchat)
+  cellchat <- identifyOverExpressedInteractions(cellchat)
+
+  cellchat <- computeCommunProb(cellchat)
+  cellchat <- computeCommunProbPathway(cellchat)
+
+  df.net <- subsetCommunication(cellchat)
+
+  # viz time
+  cellchat <- aggregateNet(cellchat)
+  groupSize <- as.numeric(table(cellchat@idents))
+
+  mt.net <- df.net %>% filter(source == "MAC_MT" | target == "MAC_MT")
+  mt.ints <- unique(mt.net$interaction_name)
+  mt.paths <- unique(mt.net$pathway_name)
+ 
+  cellchat <- cc.list[["liver"]]
+  df.net <- df.net.list[["liver"]]
+
+  pathways.to.show <- c("CHEMERIN", "VEGF", "TWEAK")
+  cellchat$indepth_cellType <- toupper(cellchat$indepth_cellType)
+
+  # Figure 4B: Interaction strength dot plot
+  netVisual_bubble(cellchat, signaling = pathways.to.show, remove.isolate = FALSE)
+  
+  # Figure 4C: chord signalling plots
+  lapply(pathways.to.show, function(pathway) {
+    lapply(c("chord", "circle"), function(plot.type) {
+      netVisual_individual(cellchat,
+        signaling = pathway,
+        remove.isolate = F,
+        color.use = paste(combined.color.vector[match(toupper(rownames(obj@netP$prob[, , obj@netP$pathways == "VEGF"])), names(combined.color.vector))]),
+        pairLR.use = df.net %>% filter(pathway_name == pathway, source == "MAC_MT" | target == "MAC_MT") %>% pull(interaction_name),
+        layout = plot.type
+      )
+    })
+  })
+
+  # Figure 4D: Violin plot of interacting genes
+  ggpubr::ggarrange(VlnPlot(obj,
+    features = c("RARRES2", "CMKLR1", "VEGFB", "FLT1", "TNFSF12", "TNFRSF12A"),
+    pt.size = 0,
+    stack = T,
+    fill.by = "ident",
+    group.by = "indepth_cellType"
+  ) +
+    scale_fill_manual(values = combined.color.vector) +
+    theme(
+      axis.text.x = element_text(color = "black"),
+      strip.text.x = element_text(angle = 0, vjust = 0),
+      axis.title = element_blank()
+    ) +
+    NoLegend(), nrow = 2, heights = c(0.6, 0.4))
+```
+
